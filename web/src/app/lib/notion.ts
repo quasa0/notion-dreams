@@ -33,7 +33,39 @@ export type DreamDashboardData = {
   source: "notion" | "demo";
 };
 
+type DashboardCache = {
+  expiresAt: number;
+  data?: DreamDashboardData;
+  pending?: Promise<DreamDashboardData>;
+};
+
+const dashboardCache: DashboardCache = { expiresAt: 0 };
+const dashboardCacheMs = 1000;
+
 export async function getDreamDashboardData(): Promise<DreamDashboardData> {
+  const now = Date.now();
+  if (dashboardCache.data && now < dashboardCache.expiresAt) {
+    return dashboardCache.data;
+  }
+
+  if (dashboardCache.pending) {
+    return dashboardCache.pending;
+  }
+
+  dashboardCache.pending = loadDreamDashboardData().then((data) => {
+    dashboardCache.data = data;
+    dashboardCache.expiresAt = Date.now() + dashboardCacheMs;
+    dashboardCache.pending = undefined;
+    return data;
+  }, (error) => {
+    dashboardCache.pending = undefined;
+    throw error;
+  });
+
+  return dashboardCache.pending;
+}
+
+async function loadDreamDashboardData(): Promise<DreamDashboardData> {
   const auth = process.env.NOTION_API_TOKEN;
   const dataSourceId = process.env.NOTION_DREAMS_DATA_SOURCE_ID;
 
@@ -43,11 +75,15 @@ export async function getDreamDashboardData(): Promise<DreamDashboardData> {
 
   try {
     const notion = new Client({ auth });
-    const response = await notion.dataSources.query({
-      data_source_id: dataSourceId,
-      page_size: 100,
-      sorts: [{ timestamp: "created_time", direction: "descending" }],
-    });
+    const response = await withTimeout(
+      notion.dataSources.query({
+        data_source_id: dataSourceId,
+        page_size: 100,
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+      }),
+      3500,
+      "Timed out loading Notion Dreams reports",
+    );
 
     const runs = await Promise.all(response.results.map((page) => pageToRun(notion, page as NotionPage)));
     return { edits: runsToEdits(runs), runs, source: "notion" };
@@ -94,7 +130,11 @@ async function pageToRun(notion: Client, page: NotionPage): Promise<DreamRun> {
 
 async function readProgress(notion: Client, pageId: string): Promise<Partial<DreamRun> | null> {
   try {
-    const response = await notion.blocks.children.list({ block_id: pageId, page_size: 10 });
+    const response = await withTimeout(
+      notion.blocks.children.list({ block_id: pageId, page_size: 10 }),
+      1500,
+      "Timed out reading live run progress",
+    );
     for (const block of response.results as NotionBlock[]) {
       if (block.type !== "paragraph") continue;
       const text = block.paragraph?.rich_text?.map((item) => item.plain_text ?? "").join("").trim() ?? "";
@@ -164,4 +204,20 @@ function numberProp(prop?: NotionProperty): number {
 
 function urlProp(prop?: NotionProperty): string {
   return prop?.type === "url" && typeof prop.url === "string" ? prop.url : "";
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }

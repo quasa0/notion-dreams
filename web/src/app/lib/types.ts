@@ -42,5 +42,6 @@ export type ReportBlock = {
   id: string;
   type: "paragraph" | "heading_2" | "numbered_list_item" | "quote";
   rich_text: ReportRichText[];
+  color?: string;
   children?: ReportBlock[];
 };

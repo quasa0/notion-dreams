@@ -12,6 +12,12 @@ type ModelPolishResult =
   | { ok: true; items: Array<{ id: string; text: string }> }
   | { ok: false; reason: string };
 
+type ChunkedPolishResult = {
+  ok: boolean;
+  items: Array<{ id: string; text: string }>;
+  reason: string;
+};
+
 export async function polishBlock(block: EditableBlock, config: DreamsConfig): Promise<PolishResult> {
   return (await polishBlocks([block], config))[0] ?? skip("not changed");
 }
@@ -27,18 +33,18 @@ export async function polishBlocks(blocks: EditableBlock[], config: DreamsConfig
     return results.map((result) => result ?? skip("not changed"));
   }
 
-  const llmResult = await polishPageWithOpenAI(
+  const llmResults = await polishBlocksWithOpenAI(
     modelInputs.map((item) => ({ id: item.block.id, type: item.block.type, text: item.original })),
     config,
   );
-  const byId = llmResult.ok ? new Map(llmResult.items.map((item) => [item.id, item.text])) : new Map<string, string>();
+  const byId = new Map<string, string>(llmResults.items.map((item) => [item.id, item.text]));
 
   for (const item of modelInputs) {
     const heuristic = heuristicPolish(item.original);
     const polished = (byId.get(item.block.id) || heuristic).trim();
 
     if (!polished || polished === item.original) {
-      results[item.index] = skip(llmResult.ok ? "already clear" : `${llmResult.reason}; no local cleanup`);
+      results[item.index] = skip(llmResults.ok ? "already clear" : `${llmResults.reason}; no local cleanup`);
       continue;
     }
 
@@ -58,6 +64,30 @@ export async function polishBlocks(blocks: EditableBlock[], config: DreamsConfig
   return results.map((result) => result ?? skip("not changed"));
 }
 
+async function polishBlocksWithOpenAI(
+  blocks: Array<{ id: string; type: string; text: string }>,
+  config: DreamsConfig,
+): Promise<ChunkedPolishResult> {
+  const items: Array<{ id: string; text: string }> = [];
+  const failures: string[] = [];
+
+  for (let index = 0; index < blocks.length; index += 8) {
+    const chunk = blocks.slice(index, index + 8);
+    const result = await polishPageWithOpenAI(chunk, config);
+    if (result.ok) {
+      items.push(...result.items);
+    } else {
+      failures.push(result.reason);
+    }
+  }
+
+  return {
+    ok: failures.length === 0,
+    items,
+    reason: failures[0] ?? "OpenAI unavailable",
+  };
+}
+
 function precheck(original: string, config: DreamsConfig): PolishResult | undefined {
   if (original.length < config.minTextLength) {
     return skip("too short to improve safely");
@@ -75,16 +105,21 @@ async function polishPageWithOpenAI(
   config: DreamsConfig,
 ): Promise<ModelPolishResult> {
   const apiKey = process.env.DREAMS_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, reason: "OpenAI unavailable: missing API key" };
+  if (!apiKey) {
+    logOpenAI(`skip reason="missing API key" blocks=${blocks.length}`);
+    return { ok: false, reason: "OpenAI unavailable: missing API key" };
+  }
 
   try {
-    let response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks, true));
+    let response = await openAIAttempt(apiKey, config, blocks, true, 1);
 
     if (response.status === 400) {
-      response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks, false));
+      logOpenAI(`retry reason="HTTP 400 with reasoning" next_attempt=2 blocks=${blocks.length}`);
+      response = await openAIAttempt(apiKey, config, blocks, false, 2);
     }
 
     if (!response.ok) {
+      logOpenAI(`fail status=${response.status} blocks=${blocks.length}`);
       return { ok: false, reason: `OpenAI unavailable: HTTP ${response.status}` };
     }
 
@@ -98,12 +133,33 @@ async function polishPageWithOpenAI(
         ?.flatMap((item) => item.content ?? [])
         .map((item) => item.text ?? "")
         .join("");
-    if (!output) return { ok: false, reason: "OpenAI unavailable: empty response" };
+    if (!output) {
+      logOpenAI(`fail reason="empty response" blocks=${blocks.length}`);
+      return { ok: false, reason: "OpenAI unavailable: empty response" };
+    }
 
-    return parseModelOutput(output);
-  } catch {
+    const parsed = parseModelOutput(output);
+    logOpenAI(parsed.ok ? `ok parsed_blocks=${parsed.items.length} input_blocks=${blocks.length}` : `fail reason="${parsed.reason}" blocks=${blocks.length}`);
+    return parsed;
+  } catch (error) {
+    logOpenAI(`fail reason="request failed" error="${error instanceof Error ? error.name : "unknown"}" blocks=${blocks.length}`);
     return { ok: false, reason: "OpenAI unavailable: request failed" };
   }
+}
+
+async function openAIAttempt(
+  apiKey: string,
+  config: DreamsConfig,
+  blocks: Array<{ id: string; type: string; text: string }>,
+  includeReasoning: boolean,
+  attempt: number,
+): Promise<Response> {
+  const started = Date.now();
+  const chars = blocks.reduce((total, block) => total + block.text.length, 0);
+  logOpenAI(`attempt=${attempt} model=${config.openaiModel} blocks=${blocks.length} chars=${chars} reasoning=${includeReasoning ? "on" : "off"}`);
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks, includeReasoning));
+  logOpenAI(`attempt=${attempt} status=${response.status} elapsed_ms=${Date.now() - started}`);
+  return response;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
@@ -136,6 +192,8 @@ function responseRequest(
           content: [
             "You polish editable Notion blocks from one page.",
             "Make wording clearer, tighter, and less repetitive while preserving every fact, name, date, number, link, TODO, decision, and technical term.",
+            "When adjacent sentences repeat the same point, replace them with one clear sentence that preserves the point.",
+            "Fix obvious typos and duplicated filler words when the intended wording is clear.",
             "Do not merge, split, add, remove, or reorder blocks yet.",
             "Return strict JSON only: {\"blocks\":[{\"id\":\"block id\",\"text\":\"revised text\"}]}",
             "Include every input block id exactly once. If a block is already clear, return its original text.",
@@ -186,7 +244,8 @@ function validateRewrite(before: string, after: string): { ok: true } | { ok: fa
     return { ok: false, reason: "rewrite got longer" };
   }
 
-  if (after.length < before.length * 0.45) {
+  const minimumRatio = hasSafeCompressionSignals(before) ? 0.25 : 0.45;
+  if (after.length < before.length * minimumRatio) {
     return { ok: false, reason: "rewrite removed too much text" };
   }
 
@@ -199,6 +258,23 @@ function validateRewrite(before: string, after: string): { ok: true } | { ok: fa
   }
 
   return { ok: true };
+}
+
+function hasSafeCompressionSignals(text: string): boolean {
+  return hasRepeatedSentence(text) || /\b(?:really really|very very|basically basically|later later|right now right now|filler filler|not ready, not ready|clippp|recieve|teh|sucess)\b/i.test(text);
+}
+
+function hasRepeatedSentence(text: string): boolean {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim().toLowerCase().replace(/\s+/g, " "))
+    .filter((sentence) => sentence.length > 20);
+  const seen = new Set<string>();
+  for (const sentence of sentences) {
+    if (seen.has(sentence)) return true;
+    seen.add(sentence);
+  }
+  return false;
 }
 
 function importantTokens(text: string): string[] {
@@ -216,4 +292,24 @@ function looksRisky(text: string): boolean {
 
 function skip(reason: string): PolishResult {
   return { text: "", reason: "", changed: false, skippedReason: reason };
+}
+
+function logOpenAI(message: string) {
+  console.log(`${formatLogTimestamp(new Date())} 🤖 [dreams] openai ${message}`);
+}
+
+function formatLogTimestamp(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Los_Angeles",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  const ms = date.getMilliseconds().toString().padStart(3, "0");
+  return `${value("day")}-${value("month")}-${value("year")} ${value("hour")}:${value("minute")}:${value("second")}.${ms}`;
 }

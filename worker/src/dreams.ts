@@ -39,7 +39,7 @@ export async function runDreams(
 
   const changes: ChangeRecord[] = [];
   const skipped: SkippedRecord[] = [];
-  const pageWork: Array<{ page: (typeof pages)[number]; blocks: Awaited<ReturnType<typeof readEditableBlocks>>; nextIndex: number }> = [];
+  const pageWork: PageWorkItem[] = [];
   let blocksReviewed = 0;
   let charsAdded = 0;
   let charsRemoved = 0;
@@ -50,18 +50,22 @@ export async function runDreams(
     logDream("scan", `page_scan title="${page.title}" editable_chunks=${blocks.length}`);
 
     const eligibleBlocks = [];
+    let shortBlocks = 0;
     for (const block of blocks) {
       if (block.text.trim().length < config.minTextLength) {
-        skipped.push({
-          pageId: page.id,
-          pageTitle: page.title,
-          blockId: block.id,
-          reason: "too short to improve safely",
-        });
-        logDream("skip", `skip block=${block.id} page="${page.title}" reason="too short to improve safely"`);
+        shortBlocks++;
       } else {
         eligibleBlocks.push(block);
       }
+    }
+
+    if (shortBlocks > 0) {
+      skipped.push({
+        pageId: page.id,
+        pageTitle: page.title,
+        reason: `${shortBlocks} blocks too short to improve safely`,
+      });
+      logDream("skip", `skip page="${page.title}" reason="too short to improve safely" blocks=${shortBlocks}`);
     }
 
     if (eligibleBlocks.length > 0) {
@@ -69,16 +73,15 @@ export async function runDreams(
     }
   }
 
-  for (const work of pageWork) {
-    if (blocksReviewed >= config.maxBlocks) break;
-    const remaining = config.maxBlocks - blocksReviewed;
-    const selectedBlocks = work.blocks.slice(0, remaining);
-    work.nextIndex = selectedBlocks.length;
+  while (blocksReviewed < config.maxBlocks) {
+    const selected = nextFairBatch(pageWork, config.maxBlocks - blocksReviewed);
+    if (selected.length === 0) break;
 
-    logDream("review", `review page_batch page="${work.page.title}" blocks=${selectedBlocks.length}`);
-    const polishResults = await polishBlocks(selectedBlocks, config);
+    logDream("review", `review fair_batch blocks=${selected.length} pages=${new Set(selected.map((item) => item.work.page.id)).size}`);
+    const polishResults = await polishBlocks(selected.map((item) => item.block), config);
 
-    for (const [index, block] of selectedBlocks.entries()) {
+    for (const [index, item] of selected.entries()) {
+      const { work, block } = item;
       const beforeChangeCount = changes.length;
       await reviewBlockResult({
         notion,
@@ -98,6 +101,7 @@ export async function runDreams(
       }
 
       if (changes.length !== beforeChangeCount) {
+        const latestChange = changes.at(-1);
         await onProgress?.({
           runStartedAt,
           pagesScanned: pages.length,
@@ -105,6 +109,7 @@ export async function runDreams(
           blocksChanged: changes.length,
           charsAdded,
           charsRemoved,
+          ...(latestChange ? { latestChange } : {}),
         });
       }
     }
@@ -112,8 +117,7 @@ export async function runDreams(
 
   for (const work of pageWork) {
     if (work.nextIndex < work.blocks.length) {
-      skipped.push({ pageId: work.page.id, pageTitle: work.page.title, reason: "max block limit reached" });
-      logDream("skip", `skip page="${work.page.title}" reason="max block limit reached"`);
+      skipped.push({ pageId: work.page.id, pageTitle: work.page.title, reason: "remaining blocks not reviewed: max block limit reached" });
     }
 
     const pageChanged = changes.filter((change) => change.pageId === work.page.id).length;
@@ -147,6 +151,27 @@ export async function runDreams(
     skipped,
   };
 }
+
+function nextFairBatch(
+  pageWork: PageWorkItem[],
+  remainingBudget: number,
+) {
+  const selected: Array<{ work: PageWorkItem; block: Awaited<ReturnType<typeof readEditableBlocks>>[number] }> = [];
+  for (const work of pageWork) {
+    if (selected.length >= remainingBudget) break;
+    const block = work.blocks[work.nextIndex];
+    if (!block) continue;
+    selected.push({ work, block });
+    work.nextIndex++;
+  }
+  return selected;
+}
+
+type PageWorkItem = {
+  page: Awaited<ReturnType<typeof findChangedPages>>[number];
+  blocks: Awaited<ReturnType<typeof readEditableBlocks>>;
+  nextIndex: number;
+};
 
 async function reviewBlockResult(args: {
   notion: NotionClientLike;

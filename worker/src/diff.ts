@@ -15,8 +15,14 @@ export function diffStats(changes: ChangeRecord[]) {
 }
 
 export function diffParts(before: string, after: string): Array<{ kind: "same" | "removed" | "added"; text: string }> {
-  const beforeTokens = tokenize(before);
-  const afterTokens = tokenize(after);
+  return diffTokenParts(tokenize(before), tokenize(after));
+}
+
+export function diffDisplayParts(before: string, after: string): Array<{ kind: "same" | "removed" | "added"; text: string }> {
+  return compactDisplayParts(diffParts(before, after));
+}
+
+function diffTokenParts(beforeTokens: string[], afterTokens: string[]): Array<{ kind: "same" | "removed" | "added"; text: string }> {
   const rows = beforeTokens.length + 1;
   const cols = afterTokens.length + 1;
   const dp = Array.from({ length: rows }, () => Array<number>(cols).fill(0));
@@ -86,4 +92,36 @@ function pushPart(
   } else {
     parts.push({ kind, text });
   }
+}
+
+function compactDisplayParts(parts: Array<{ kind: "same" | "removed" | "added"; text: string }>) {
+  const compacted: typeof parts = [];
+
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (!part) continue;
+
+    const previous = compacted.at(-1);
+    const next = parts[index + 1];
+
+    if (
+      part.kind === "same" &&
+      previous &&
+      next &&
+      previous.kind !== "same" &&
+      next.kind !== "same" &&
+      isTinyConnector(part.text)
+    ) {
+      pushPart(compacted, previous.kind, part.text);
+      continue;
+    }
+
+    pushPart(compacted, part.kind, part.text);
+  }
+
+  return compacted;
+}
+
+function isTinyConnector(text: string): boolean {
+  return text.length <= 8 && !/[.!?;]/.test(text);
 }

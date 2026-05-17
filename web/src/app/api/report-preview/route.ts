@@ -8,8 +8,8 @@ type NotionBlock = {
   has_children?: boolean;
   paragraph?: { rich_text?: NotionRichText[] };
   heading_2?: { rich_text?: NotionRichText[] };
-  numbered_list_item?: { rich_text?: NotionRichText[] };
-  quote?: { rich_text?: NotionRichText[] };
+  numbered_list_item?: { rich_text?: NotionRichText[]; color?: string };
+  quote?: { rich_text?: NotionRichText[]; color?: string };
 };
 
 type NotionRichText = {
@@ -35,11 +35,11 @@ export async function POST(request: Request) {
 
   try {
     const notion = new Client({ auth });
-    const blocks = await readBlocks(notion, body.pageId, 0);
+    const blocks = await withTimeout(readBlocks(notion, body.pageId, 0), 3500, "Timed out loading report preview");
     return NextResponse.json({ blocks });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to load report";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: 503 });
   }
 }
 
@@ -48,11 +48,15 @@ async function readBlocks(notion: Client, blockId: string, depth: number): Promi
 }
 
 async function readBlockPage(notion: Client, blockId: string, depth: number, cursor?: string): Promise<ReportBlock[]> {
-  const response = await notion.blocks.children.list({
-    block_id: blockId,
-    page_size: 100,
-    ...(cursor ? { start_cursor: cursor } : {}),
-  });
+  const response = await withTimeout(
+    notion.blocks.children.list({
+      block_id: blockId,
+      page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    }),
+    2000,
+    "Timed out reading report blocks",
+  );
 
   const blocks = (
     await Promise.all(
@@ -81,10 +85,13 @@ function normalizeBlock(block: NotionBlock): ReportBlock | null {
     return null;
   }
 
+  const content = block[block.type] as { rich_text?: NotionRichText[]; color?: string } | undefined;
+
   return {
     id: block.id,
     type: block.type,
-    rich_text: normalizeRichText(block[block.type]?.rich_text ?? []),
+    rich_text: normalizeRichText(content?.rich_text ?? []),
+    ...(content?.color ? { color: content.color } : {}),
   };
 }
 
@@ -96,4 +103,20 @@ function normalizeRichText(items: NotionRichText[]): ReportRichText[] {
     ...(item.annotations?.strikethrough ? { strikethrough: true } : {}),
     ...(item.annotations?.color && item.annotations.color !== "default" ? { color: item.annotations.color } : {}),
   }));
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }

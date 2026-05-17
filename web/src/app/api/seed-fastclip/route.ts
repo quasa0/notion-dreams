@@ -203,7 +203,9 @@ Company context:
 
 Make these pages useful demo material for Notion Dreams:
 - Include some normal clean documentation.
-- Include several intentionally verbose paragraphs with filler words, hedging, repeated words, and sentences that can be tightened without changing meaning.
+- Include several intentionally verbose paragraphs with filler words, hedging, repeated words, obvious typos, and sentences that can be tightened without changing meaning.
+- Include some blocks where 2 or 3 adjacent sentences repeat the same point in slightly different words so a cleanup worker can replace them with one clearer sentence.
+- Include occasional messy phrases like "really really", "basically basically", "kind of maybe", "teh", "recieve", or "clippp", but keep facts, names, numbers, and TODOs stable.
 - Include at least one table across the 3 pages.
 - Include todos, quotes, bullets, and operational details.
 - Avoid top-level prefix in page titles. Titles should be only the topic, for example "Clip Review Quality Bar" or "Transcript Pipeline Notes".

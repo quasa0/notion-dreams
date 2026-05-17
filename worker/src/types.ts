@@ -83,4 +83,5 @@ export type DreamsRunProgress = {
   blocksChanged: number;
   charsAdded: number;
   charsRemoved: number;
+  latestChange?: ChangeRecord;
 };

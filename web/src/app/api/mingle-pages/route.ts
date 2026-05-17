@@ -16,37 +16,49 @@ const mingleSections = [
   {
     heading: "Review Handoff Notes",
     paragraphs: [
-      "The review step is currently meant to be a lightweight confirmation moment, but in actual usage it has become a place where the team checks title quality, clip boundary confidence, transcript oddities, customer language, export readiness, and also whether the same clip was already mentioned somewhere else in the workspace, which means the reviewer is doing several overlapping jobs in one pass even when the page says this should be quick.",
-      "We should keep the approval flow fast, but fast in this context means reviewers can still pause, compare, re-read, and sometimes go back to the transcript before approving, so the word fast should not be interpreted as always one click or always no review because quality still matters and the approval moment is also the quality moment.",
+      "The review step is currently meant to be a lightweight confirmation moment, but in actual usage it has become a place where the team checks title quality, clip boundary confidence, transcript oddities, customer language, export readiness, and also whether the same clip was already mentioned somewhere else in the workspace. The reviewer is doing several overlapping jobs in one pass. The reviewer is doing several overlapping jobs in one pass, basically. The reviewer is doing several overlapping jobs in one pass and that is kind of the whole problem.",
+      "We should keep the approval flow fast, but fast in this context means reviewers can still pause, compare, re-read, and sometimes go back to the transcript before approving. Fast does not mean one click with no review. Fast does not mean one click with no review. Fast does not mean one click with no review, just to be super clear.",
     ],
     bullets: [
-      "Reviewer checks title clarity, transcript confidence, clip boundary shape, export readiness, and whether this same customer moment appears in another recap.",
-      "Some of this repeats the quality bar, but it is included here too because people look at this page first during handoff.",
+      "Reviewer checks title clarity, transcript confidence, clip boundary shape, export readiness, and whether this same customer moment appears in another recap, and also checks it again because sometimes we are not sure.",
+      "Some of this repeats the quality bar, but it is included here too because people look at this page first during handoff and then people ask the same thing again later.",
       "If the same issue appears in the transcript notes and the review notes, treat the transcript notes as the source of truth unless the review notes are more recent.",
     ],
   },
   {
     heading: "Pipeline Exception Handling",
     paragraphs: [
-      "When uploads fail, the system should retry, but retrying can mean retrying the upload, retrying the transcript job, retrying the clip scoring step, or retrying the whole job from the beginning, and those options are similar but not identical because they each create different audit events and different partial states for operators to interpret later.",
-      "The practical goal is that a customer success person can understand whether a recording is blocked, partially processed, mostly processed, waiting on a signed URL refresh, or already usable even though one optional enrichment step did not finish, which is a lot of statuses and some of them sound almost the same.",
+      "When uploads fail, the system should retry, but retrying can mean retrying the upload, retrying the transcript job, retrying the clip scoring step, or retrying the whole job from the beginning. These options are similar but not identical. These options are similar but not identical. These options are similar but not identical because they each create different audit events and different partial states for operators to interpret later.",
+      "The practical goal is that a customer success person can understand whether a recording is blocked, partially processed, mostly processed, waiting on a signed URL refresh, or already usable even though one optional enrichment step did not finish, which is a lot of statuses and some of them sound almost the same, and honestly the status labels are sort of confusing right now right now.",
     ],
     bullets: [
       "Do not mark an import complete just because a transcript exists; completion also depends on clip candidates and review state.",
-      "If scoring fails after transcription succeeds, keep the transcript visible because that is still useful even if the candidate clips are not ready.",
-      "This overlaps with the operations runbook status table, but keeping it here helps engineers see the same rule near the retry code.",
+      "If scoring fails after transcription succeeds, keep the transcript visible because that is still useful even if the candidate clips are not ready, not ready, not ready.",
+      "This overlaps with the operations runbook status table, but keeping it here helps engineers see the same rule near the retry code, which is repetitive but also useful and also repetitive.",
     ],
   },
   {
     heading: "Customer Language Cleanup",
     paragraphs: [
-      "Customer quotes should preserve meaning and specific wording, but they often include filler, restarts, hedges, fragments, repeated phrases, and unclear references like this thing or that part, so the final clip rationale should be readable while still sounding like the customer actually said it and not like a polished marketing testimonial invented after the call.",
-      "The clip title and the rationale are separate fields, although both summarize the same moment, and sometimes the rationale repeats the title because the reviewer needs context, but sometimes that repetition makes the export feel padded and less direct than it needs to be.",
+      "Customer quotes should preserve meaning and specific wording, but they often include filler, restarts, hedges, fragments, repeated phrases, and unclear references like this thing or that part. The final clip rationale should be readable while still sounding like the customer actually said it. The final clip rationale should be readable while still sounding like the customer actually said it. The final clip rationale should be readable while still sounding like the customer actually said it, basically.",
+      "The clip title and the rationale are separate fields, although both summarize the same moment, and sometimes the rationale repeats the title because the reviewer needs context, but sometimes that repetition makes the export feel padded and less direct than it needs to be and it is very very very padded.",
     ],
     bullets: [
       "Keep product names, customer terms, numbers, timestamps, and named workflows unchanged.",
-      "Reduce filler only after the meaning is obvious from the surrounding transcript.",
+      "Reduce filler only after the meaning is obvious from the surrounding transcript, unless the filler is literally just filler filler filler.",
       "Avoid making the rationale sound more certain than the customer sounded in the recording.",
+    ],
+  },
+  {
+    heading: "Clip Naming Cleanup",
+    paragraphs: [
+      "The title should say the thing the clip is about, but lately we have titles that sort of explain the thing and then explain it again and then explain it again in slightly different words. The title should say the thing the clip is about. The title should say the thing the clip is about. The title should say the thing the clip is about without being weirdly long.",
+      "If the transcript has speaker labels in a strange order, the draft name sometimes says Customer pain point customer pain point customer pain point, which is not useful and makes the queue look broken even when the actual clip is fine.",
+    ],
+    bullets: [
+      "Avoid titles that start with really really vague words like Interesting, Useful, Good, Important, or Thing.",
+      "Fix obvious typos like recieve, teh, sucess, and clippp before a human has to stare at them.",
+      "Do not change company names, product names, timestamps, or numbers.",
     ],
   },
 ];
@@ -163,12 +175,33 @@ function randomInt(min: number, max: number) {
 
 function sectionToBlocks(section: (typeof mingleSections)[number], now: Date): NotionBlock[] {
   const stamp = pacificStampFormatter.format(now);
+  const mess = messyVariant();
 
   return [
     h2(`${section.heading} (${stamp})`),
-    ...section.paragraphs.map(p),
-    ...section.bullets.map(bulleted),
+    ...section.paragraphs.map((paragraph) => p(applyMess(paragraph, mess))),
+    ...section.bullets.map((bullet) => bulleted(applyMess(bullet, mess))),
   ];
+}
+
+function messyVariant() {
+  const variants = [
+    " Also, this is basically basically the same point again for emphasis.",
+    " We should probably maybe kind of revisit this later later later.",
+    " This sentence is here because the team keeps saying the same thing in the same place.",
+    " Teh wording is not quite right and the clippp queue feels really really noisy.",
+    " The main thing is the main thing, and the main thing should stay the main thing.",
+  ];
+  return variants[randomInt(0, variants.length - 1)] ?? "";
+}
+
+function applyMess(text: string, extra: string) {
+  if (Math.random() < 0.45) return text;
+  if (Math.random() < 0.5) return `${text}${extra}`;
+  const sentences = text.match(/[^.!?]+[.!?]+/g) ?? [text];
+  const repeated = sentences[0]?.trim();
+  if (!repeated) return `${text}${extra}`;
+  return `${text} ${repeated} ${repeated}`;
 }
 
 function getPageTitle(properties: Record<string, unknown>): string {

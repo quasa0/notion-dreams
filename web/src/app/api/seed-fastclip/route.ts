@@ -76,8 +76,8 @@ async function generateFastclipPages(openAiKey: string): Promise<GeneratedPayloa
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
-      temperature: 0.95,
+      model: process.env.OPENAI_MODEL ?? "gpt-5.5",
+      reasoning_effort: "minimal",
       response_format: {
         type: "json_schema",
         json_schema: {

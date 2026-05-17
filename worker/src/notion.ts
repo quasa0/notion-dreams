@@ -121,6 +121,10 @@ async function collectEditableBlocks(
     const obj = asRecord(child);
     const type = obj.type;
 
+    if (type === "child_page") {
+      continue;
+    }
+
     if (typeof type === "string" && editableBlockTypes.has(type as EditableBlockType)) {
       const richText = asRecord(obj[type])["rich_text"];
       const text = plainText(richText);
@@ -131,6 +135,7 @@ async function collectEditableBlocks(
           pageId,
           pageTitle,
           text,
+          ...(typeof obj.last_edited_time === "string" ? { lastEditedTime: obj.last_edited_time } : {}),
         });
       }
     }

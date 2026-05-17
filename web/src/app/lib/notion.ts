@@ -9,6 +9,11 @@ type NotionPage = {
   properties?: Record<string, NotionProperty>;
 };
 
+type NotionBlock = {
+  type?: string;
+  paragraph?: { rich_text?: RichText[] };
+};
+
 type NotionProperty = {
   type: string;
   title?: RichText[];
@@ -40,11 +45,11 @@ export async function getDreamDashboardData(): Promise<DreamDashboardData> {
     const notion = new Client({ auth });
     const response = await notion.dataSources.query({
       data_source_id: dataSourceId,
-      page_size: 25,
+      page_size: 100,
       sorts: [{ timestamp: "created_time", direction: "descending" }],
     });
 
-    const runs = response.results.map((page) => pageToRun(page as NotionPage));
+    const runs = await Promise.all(response.results.map((page) => pageToRun(notion, page as NotionPage)));
     return { edits: runsToEdits(runs), runs, source: "notion" };
   } catch (error) {
     console.error("Failed to load Notion Dreams reports", error);
@@ -52,16 +57,22 @@ export async function getDreamDashboardData(): Promise<DreamDashboardData> {
   }
 }
 
-function pageToRun(page: NotionPage): DreamRun {
+async function pageToRun(notion: Client, page: NotionPage): Promise<DreamRun> {
   const props = page.properties ?? {};
-  const reportId = textProp(props["Report ID"]) || textProp(props.Name) || page.id;
-  const ranAt = textProp(props["Run Started At"]) || page.created_time || page.last_edited_time;
   const status = textProp(props.Status) || "unknown";
-  const changed = numberProp(props["Blocks Changed"]);
-  const reviewed = numberProp(props["Blocks Reviewed"]);
-  const scanned = numberProp(props["Pages Scanned"]);
+  const progress = status.toLowerCase() === "in progress" ? await readProgress(notion, page.id) : null;
+  const reportId = status.toLowerCase() === "in progress"
+    ? textProp(props.Name) || textProp(props["Report ID"]) || page.id
+    : textProp(props["Report ID"]) || textProp(props.Name) || page.id;
+  const ranAt = textProp(props["Run Started At"]) || page.created_time || page.last_edited_time;
+  const changed = progress?.blocks_changed ?? numberProp(props["Blocks Changed"]);
+  const reviewed = progress?.blocks_reviewed ?? numberProp(props["Blocks Reviewed"]);
+  const added = progress?.chars_added ?? numberProp(props["Chars Added"]);
+  const removed = progress?.chars_removed ?? numberProp(props["Chars Removed"]);
+  const scanned = progress?.pages_scanned ?? numberProp(props["Pages Scanned"]);
   const reportPageId = textProp(props["Report Page ID"]);
   const reportUrl = urlProp(props["Report URL"]);
+  const publicReportUrl = urlProp(props["Public Report URL"]);
 
   return {
     key: page.id,
@@ -69,18 +80,59 @@ function pageToRun(page: NotionPage): DreamRun {
     run_page_id: page.id,
     ...(reportPageId ? { report_page_id: reportPageId } : {}),
     ...(reportUrl ? { report_url: reportUrl } : {}),
+    ...(publicReportUrl ? { public_report_url: publicReportUrl } : {}),
     ran_at: ranAt,
     blocks_changed: changed,
     blocks_reviewed: reviewed,
+    chars_added: added,
+    chars_removed: removed,
     pages_scanned: scanned,
     status,
-    source: status.includes("hello") ? "manual-cli" : "worker",
+    source: "worker",
   };
+}
+
+async function readProgress(notion: Client, pageId: string): Promise<Partial<DreamRun> | null> {
+  try {
+    const response = await notion.blocks.children.list({ block_id: pageId, page_size: 10 });
+    for (const block of response.results as NotionBlock[]) {
+      if (block.type !== "paragraph") continue;
+      const text = block.paragraph?.rich_text?.map((item) => item.plain_text ?? "").join("").trim() ?? "";
+      const progress = parseProgress(text);
+      if (progress) return progress;
+    }
+  } catch (error) {
+    console.error("Failed to read live run progress", error);
+  }
+
+  return null;
+}
+
+function parseProgress(text: string): Partial<DreamRun> | null {
+  if (!text.startsWith("__dreams_progress__ ")) return null;
+  const values = new Map<string, string>();
+  for (const part of text.slice("__dreams_progress__ ".length).split(/\s+/)) {
+    const [key, value] = part.split("=");
+    if (key && value) values.set(key, value);
+  }
+
+  return {
+    pages_scanned: numberValue(values.get("pages_scanned")),
+    blocks_reviewed: numberValue(values.get("blocks_reviewed")),
+    blocks_changed: numberValue(values.get("blocks_changed")),
+    chars_added: numberValue(values.get("chars_added")),
+    chars_removed: numberValue(values.get("chars_removed")),
+  };
+}
+
+function numberValue(value?: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function runsToEdits(runs: DreamRun[]): DreamEdit[] {
   return runs
-    .filter((run) => (run.blocks_changed ?? 0) === 0)
+    .filter((run) => run.status?.toLowerCase() !== "in progress" && (run.blocks_changed ?? 0) === 0)
     .map((run) => ({
       id: `${run.key}-summary`,
       page: run.run_id ?? "Dreams report",

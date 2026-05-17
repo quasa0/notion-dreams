@@ -3,11 +3,14 @@ import { Worker } from "@notionhq/workers";
 import * as Builder from "@notionhq/workers/builder";
 import * as Schema from "@notionhq/workers/schema";
 import { loadConfig } from "./config.js";
+import { diffParts, diffStats } from "./diff.js";
 import { runDreams } from "./dreams.js";
-import type { ChangeRecord, DreamsRunResult, NotionClientLike } from "./types.js";
+import type { ChangeRecord, DreamsRunProgress, DreamsRunResult, NotionClientLike } from "./types.js";
 
 const worker = new Worker();
 export default worker;
+
+const notionDreamsSchedule = "manual";
 
 const reports = worker.database("dreamsReports", {
   type: "managed",
@@ -22,9 +25,12 @@ const reports = worker.database("dreamsReports", {
       "Pages Scanned": Schema.number(),
       "Blocks Reviewed": Schema.number(),
       "Blocks Changed": Schema.number(),
+      "Chars Added": Schema.number(),
+      "Chars Removed": Schema.number(),
       "Dry Run": Schema.checkbox(),
       "Report Page ID": Schema.richText(),
       "Report URL": Schema.url(),
+      "Public Report URL": Schema.url(),
     },
   },
 });
@@ -32,7 +38,7 @@ const reports = worker.database("dreamsReports", {
 worker.sync("notionDreams", {
   database: reports,
   mode: "incremental",
-  schedule: "manual",
+  schedule: notionDreamsSchedule,
   execute: async () => {
     const auth = process.env.DREAMS_NOTION_API_TOKEN ?? process.env.NOTION_API_TOKEN;
     const reportDataSourceId = process.env.DREAMS_REPORT_DATA_SOURCE_ID;
@@ -44,50 +50,94 @@ worker.sync("notionDreams", {
 
     const notion = new Client({ auth });
     const config = loadConfig();
-    const lastRunAt = await latestRunStartedAt(notion, reportDataSourceId, config.initialLookbackHours);
-    const result = await runDreams(notion as unknown as NotionClientLike, config, { lastRunAt });
-    const report = await createReportPage(notion, reportsPageId, result);
-    const reportId = reportTitle(result.runStartedAt);
+    const runStartedAt = new Date().toISOString();
+    const reportId = reportTitle(runStartedAt);
+    const runRow = await createRunRow(notion, reportDataSourceId, reportId, runStartedAt, config.dryRun);
+    try {
+      const lastRunAt = await latestRunStartedAt(notion, reportDataSourceId, config.initialLookbackHours);
+      const result = await runDreams(notion as unknown as NotionClientLike, config, { lastRunAt, runStartedAt }, (progress) =>
+        updateRunProgress(notion, runRow.progressBlockId, progress),
+      );
+      const stats = diffStats(result.changes);
+      console.log(
+        `[dreams-db] final upsert report_id="${reportId}" blocks_reviewed=${result.blocksReviewed} blocks_changed=${result.changes.length} chars_added=${stats.added} chars_removed=${stats.removed}`,
+      );
+      const report = await createReportPage(notion, reportsPageId, result);
+      await archiveRunRow(notion, runRow.id);
 
-    console.log(
-      `Notion Dreams run scanned ${result.pagesScanned} pages, reviewed ${result.blocksReviewed} blocks, changed ${result.changes.length} blocks.`,
-    );
+      console.log(
+        `Notion Dreams run scanned ${result.pagesScanned} pages, reviewed ${result.blocksReviewed} blocks, changed ${result.changes.length} blocks.`,
+      );
 
-    return {
-      changes: [
-        {
-          type: "upsert" as const,
-          key: reportId,
-          properties: {
-            Name: Builder.title(reportId),
-            "Report ID": Builder.richText(reportId),
-            Status: Builder.richText(result.changes.length > 0 ? "changed" : "no changes"),
-            "Run Started At": Builder.richText(result.runStartedAt),
-            "Pages Scanned": Builder.number(result.pagesScanned),
-            "Blocks Reviewed": Builder.number(result.blocksReviewed),
-            "Blocks Changed": Builder.number(result.changes.length),
-            "Dry Run": Builder.checkbox(config.dryRun),
-            "Report Page ID": Builder.richText(report.id),
-            "Report URL": Builder.url(report.url ?? ""),
+      return {
+        changes: [
+          {
+            type: "upsert" as const,
+            key: reportId,
+            properties: {
+              Name: Builder.title(reportId),
+              "Report ID": Builder.richText(reportId),
+              Status: Builder.richText("done"),
+              "Run Started At": Builder.richText(result.runStartedAt),
+              "Pages Scanned": Builder.number(result.pagesScanned),
+              "Blocks Reviewed": Builder.number(result.blocksReviewed),
+              "Blocks Changed": Builder.number(result.changes.length),
+              "Chars Added": Builder.number(stats.added),
+              "Chars Removed": Builder.number(stats.removed),
+              "Dry Run": Builder.checkbox(config.dryRun),
+              "Report Page ID": Builder.richText(report.id),
+              "Report URL": Builder.url(report.url ?? ""),
+              "Public Report URL": Builder.url(report.publicUrl ?? ""),
+            },
+            pageContentMarkdown: [
+              `# ${reportId}`,
+              "",
+              `Run started: ${result.runStartedAt}`,
+              `Previous run cursor: ${result.lastRunAt}`,
+              `Pages scanned: ${result.pagesScanned}`,
+              `Blocks reviewed: ${result.blocksReviewed}`,
+              `Blocks changed: ${result.changes.length}`,
+              `Dry run: ${config.dryRun ? "yes" : "no"}`,
+              "",
+              report.url ? `Report page: ${report.url}` : "Report page created.",
+            ].join("\n"),
+            targetDatabaseKey: "dreamsReports",
           },
-          pageContentMarkdown: [
-            `# ${reportId}`,
-            "",
-            `Run started: ${result.runStartedAt}`,
-            `Previous run cursor: ${result.lastRunAt}`,
-            `Pages scanned: ${result.pagesScanned}`,
-            `Blocks reviewed: ${result.blocksReviewed}`,
-            `Blocks changed: ${result.changes.length}`,
-            `Dry run: ${config.dryRun ? "yes" : "no"}`,
-            "",
-            report.url ? `Report page: ${report.url}` : "Report page created.",
-          ].join("\n"),
-          targetDatabaseKey: "dreamsReports",
-        },
-      ],
-      hasMore: false,
-      nextState: { lastRunAt: result.nextLastRunAt },
-    };
+        ],
+        hasMore: false,
+        nextState: { lastRunAt: result.nextLastRunAt },
+      };
+    } catch (error) {
+      console.error(error);
+      await archiveRunRow(notion, runRow.id);
+      return {
+        changes: [
+          {
+            type: "upsert" as const,
+            key: reportId,
+            properties: {
+              Name: Builder.title(reportId),
+              "Report ID": Builder.richText(reportId),
+              Status: Builder.richText("failed"),
+              "Run Started At": Builder.richText(runStartedAt),
+              "Pages Scanned": Builder.number(0),
+              "Blocks Reviewed": Builder.number(0),
+              "Blocks Changed": Builder.number(0),
+              "Chars Added": Builder.number(0),
+              "Chars Removed": Builder.number(0),
+              "Dry Run": Builder.checkbox(config.dryRun),
+              "Report Page ID": Builder.richText(""),
+              "Report URL": Builder.url(""),
+              "Public Report URL": Builder.url(""),
+            },
+            pageContentMarkdown: [`# ${reportId}`, "", "Run failed. See worker logs for details."].join("\n"),
+            targetDatabaseKey: "dreamsReports",
+          },
+        ],
+        hasMore: false,
+        nextState: { lastRunAt: runStartedAt },
+      };
+    }
   },
 });
 
@@ -98,12 +148,14 @@ async function latestRunStartedAt(
 ): Promise<string> {
   const response = await notion.dataSources.query({
     data_source_id: dataSourceId,
-    page_size: 1,
+    page_size: 10,
     sorts: [{ timestamp: "created_time", direction: "descending" }],
   });
 
-  const latest = response.results[0];
-  if (latest && "properties" in latest) {
+  for (const latest of response.results) {
+    if (!latest || !("properties" in latest)) continue;
+    const status = richTextPropertyText(latest.properties.Status).toLowerCase();
+    if (status === "in progress") continue;
     const value = richTextPropertyText(latest.properties["Run Started At"]);
     if (value) return value;
   }
@@ -111,11 +163,80 @@ async function latestRunStartedAt(
   return new Date(Date.now() - initialLookbackHours * 60 * 60 * 1000).toISOString();
 }
 
+async function createRunRow(
+  notion: Client,
+  dataSourceId: string,
+  reportId: string,
+  runStartedAt: string,
+  dryRun: boolean,
+): Promise<{ id: string; progressBlockId?: string }> {
+  const response = await notion.pages.create({
+    parent: { data_source_id: dataSourceId },
+    properties: {
+      Name: titleProperty(reportId),
+      "Report ID": richTextProperty(`${reportId} · in progress · ${runStartedAt}`),
+      Status: richTextProperty("in progress"),
+      "Run Started At": richTextProperty(runStartedAt),
+      "Pages Scanned": { number: 0 },
+      "Blocks Reviewed": { number: 0 },
+      "Blocks Changed": { number: 0 },
+      "Chars Added": { number: 0 },
+      "Chars Removed": { number: 0 },
+      "Dry Run": { checkbox: dryRun },
+      "Report Page ID": richTextProperty(""),
+      "Report URL": { url: null },
+      "Public Report URL": { url: null },
+    },
+  } as never);
+
+  const progress = await notion.blocks.children.append({
+    block_id: response.id,
+    children: [progressParagraph({ runStartedAt, pagesScanned: 0, blocksReviewed: 0, blocksChanged: 0, charsAdded: 0, charsRemoved: 0 })],
+  } as never);
+  const progressBlockId = (progress.results?.[0] as { id?: string } | undefined)?.id;
+  console.log(
+    `[dreams-db] create in-progress row id=${response.id} report_id="${reportId}" chars_added=0 chars_removed=0 progress_block=${progressBlockId ?? "none"}`,
+  );
+
+  return { id: response.id, ...(progressBlockId ? { progressBlockId } : {}) };
+}
+
+async function updateRunProgress(notion: Client, blockId: string | undefined, progress: DreamsRunProgress): Promise<void> {
+  console.log(
+    `[dreams-db] live progress requested progress_block=${blockId ?? "none"} run_started=${progress.runStartedAt} blocks_reviewed=${progress.blocksReviewed} blocks_changed=${progress.blocksChanged} chars_added=${progress.charsAdded} chars_removed=${progress.charsRemoved}`,
+  );
+  if (!blockId) return;
+  try {
+    await notion.blocks.update({
+      block_id: blockId,
+      paragraph: progressParagraph(progress).paragraph,
+    } as never);
+    console.log(
+      `[dreams-db] live progress wrote progress_block=${blockId} run_started=${progress.runStartedAt} blocks_reviewed=${progress.blocksReviewed} blocks_changed=${progress.blocksChanged} chars_added=${progress.charsAdded} chars_removed=${progress.charsRemoved}`,
+    );
+  } catch (error) {
+    console.warn("Failed to update live run progress", error);
+  }
+}
+
+function progressParagraph(progress: DreamsRunProgress) {
+  return paragraph(
+    `__dreams_progress__ run_started=${progress.runStartedAt} pages_scanned=${progress.pagesScanned} blocks_reviewed=${progress.blocksReviewed} blocks_changed=${progress.blocksChanged} chars_added=${progress.charsAdded} chars_removed=${progress.charsRemoved}`,
+  );
+}
+
+async function archiveRunRow(notion: Client, pageId: string): Promise<void> {
+  await notion.pages.update({
+    page_id: pageId,
+    in_trash: true,
+  });
+}
+
 async function createReportPage(
   notion: Client,
   reportsPageId: string,
   result: DreamsRunResult,
-): Promise<{ id: string; url?: string }> {
+): Promise<{ id: string; url?: string; publicUrl?: string }> {
   const title = reportTitle(result.runStartedAt);
   const children = reportBlocks(result);
   const response = await notion.pages.create({
@@ -132,8 +253,13 @@ async function createReportPage(
     children: [reportLinkBlock(response.id, title)],
   } as never);
 
-  if ("url" in response && response.url) return { id: response.id, url: response.url };
-  return { id: response.id, url: notionPageUrl(response.id, title) };
+  const responseWithUrls = response as { id: string; url?: string; public_url?: string | null };
+  const url = responseWithUrls.url ?? notionPageUrl(response.id, title);
+  return {
+    id: response.id,
+    url,
+    ...(responseWithUrls.public_url ? { publicUrl: responseWithUrls.public_url } : {}),
+  };
 }
 
 function notionPageUrl(pageId: string, title: string): string {
@@ -163,6 +289,10 @@ function titleProperty(content: string) {
   return { title: [richText(content)] };
 }
 
+function richTextProperty(content: string) {
+  return { rich_text: content ? [richText(content)] : [] };
+}
+
 function reportLinkBlock(pageId: string, title: string) {
   return {
     object: "block",
@@ -178,13 +308,10 @@ function richTextPropertyText(property: unknown): string {
 }
 
 function reportBlocks(result: DreamsRunResult): Record<string, unknown>[] {
+  const grouped = groupChangesByPage(result.changes);
+  const stats = diffStats(result.changes);
   const blocks: Record<string, unknown>[] = [
-    heading("Run summary"),
-    paragraph(`Previous run cursor: ${result.lastRunAt}`),
-    paragraph(`Run started: ${result.runStartedAt}`),
-    paragraph(
-      `Scanned ${result.pagesScanned} pages, reviewed ${result.blocksReviewed} chunks, changed ${result.changes.length} chunks, skipped ${result.skipped.length}.`,
-    ),
+    summaryParagraph(result.changes.length, grouped.length, stats.added, stats.removed, runTriggerPhrase()),
   ];
 
   if (result.changes.length === 0) {
@@ -193,17 +320,12 @@ function reportBlocks(result: DreamsRunResult): Record<string, unknown>[] {
   }
 
   blocks.push(heading("Changes"));
-  const grouped = groupChangesByPage(result.changes);
 
   for (const group of grouped) {
-    blocks.push(heading(group.title));
-    if (group.url) blocks.push(paragraphWithLink("Page URL: ", group.url));
-
-    for (const [index, change] of group.changes.entries()) {
-      blocks.push(paragraph(`Chunk ${index + 1} · ${change.blockType} · ${change.reason}`));
-      blocks.push(diffParagraph(change.before, change.after));
-    }
+    blocks.push(changeGroupBlock(group));
   }
+
+  blocks.push(paragraph(""), paragraph(""));
 
   return blocks.slice(0, 100);
 }
@@ -228,111 +350,96 @@ function groupChangesByPage(changes: ChangeRecord[]) {
   return [...groups.values()];
 }
 
-function diffParagraph(before: string, after: string) {
+function runTriggerPhrase() {
+  return notionDreamsSchedule === "manual" ? "triggered manually" : "scheduled to run";
+}
+
+function summaryParagraph(changedBlocks: number, changedPages: number, added: number, removed: number, triggerPhrase: string) {
   return {
     object: "block",
     type: "paragraph",
     paragraph: {
+      rich_text: [
+        richText("notion-dreams", { bold: true }),
+        richText(" was "),
+        richText(triggerPhrase, { bold: true }),
+        richText(" and updated "),
+        richText(String(changedBlocks), { bold: true }),
+        richText(" blocks across "),
+        richText(String(changedPages), { bold: true }),
+        richText(" pages: "),
+        richText(`+${added}`, { color: "green" }),
+        richText(" "),
+        richText(`-${removed}`, { color: "red" }),
+      ],
+    },
+  };
+}
+
+function changeGroupBlock(group: { title: string; url?: string; changes: ChangeRecord[] }) {
+  return {
+    object: "block",
+    type: "numbered_list_item",
+    numbered_list_item: {
+      rich_text: [
+        richText(group.title, group.url ? { link: group.url } : undefined),
+        richText(" "),
+      ],
+      color: "default",
+      children: group.changes.map((change) => diffQuote(change.before, change.after)),
+    },
+  };
+}
+
+function diffQuote(before: string, after: string) {
+  return {
+    object: "block",
+    type: "quote",
+    quote: {
       rich_text: diffRichText(before, after),
+      color: "default",
     },
   };
 }
 
 function diffRichText(before: string, after: string) {
-  const beforeTokens = tokenize(before);
-  const afterTokens = tokenize(after);
-  const rows = beforeTokens.length + 1;
-  const cols = afterTokens.length + 1;
-  const dp = Array.from({ length: rows }, () => Array<number>(cols).fill(0));
-
-  for (let i = beforeTokens.length - 1; i >= 0; i--) {
-    for (let j = afterTokens.length - 1; j >= 0; j--) {
-      setCell(
-        dp,
-        i,
-        j,
-        tokenAt(beforeTokens, i) === tokenAt(afterTokens, j)
-          ? cell(dp, i + 1, j + 1) + 1
-          : Math.max(cell(dp, i + 1, j), cell(dp, i, j + 1)),
-      );
-    }
-  }
-
-  const parts: Array<{ kind: "same" | "removed" | "added"; text: string }> = [];
-  let i = 0;
-  let j = 0;
-
-  while (i < beforeTokens.length && j < afterTokens.length) {
-    if (tokenAt(beforeTokens, i) === tokenAt(afterTokens, j)) {
-      pushPart(parts, "same", tokenAt(beforeTokens, i));
-      i++;
-      j++;
-    } else if (cell(dp, i + 1, j) >= cell(dp, i, j + 1)) {
-      pushPart(parts, "removed", tokenAt(beforeTokens, i));
-      i++;
-    } else {
-      pushPart(parts, "added", tokenAt(afterTokens, j));
-      j++;
-    }
-  }
-
-  while (i < beforeTokens.length) pushPart(parts, "removed", tokenAt(beforeTokens, i++));
-  while (j < afterTokens.length) pushPart(parts, "added", tokenAt(afterTokens, j++));
-
-  return parts
+  return diffParts(before, after)
     .filter((part) => part.text)
     .flatMap((part) => splitRichText(part.text, part.kind));
 }
 
-function tokenize(value: string): string[] {
-  return value.match(/\s+|[^\s]+/g) ?? [];
-}
-
-function tokenAt(tokens: string[], index: number): string {
-  return tokens[index] ?? "";
-}
-
-function cell(grid: number[][], row: number, col: number): number {
-  return grid[row]?.[col] ?? 0;
-}
-
-function setCell(grid: number[][], row: number, col: number, value: number) {
-  const target = grid[row];
-  if (target) target[col] = value;
-}
-
-function pushPart(
-  parts: Array<{ kind: "same" | "removed" | "added"; text: string }>,
-  kind: "same" | "removed" | "added",
-  text: string,
-) {
-  const previous = parts.at(-1);
-  if (previous?.kind === kind) {
-    previous.text += text;
-  } else {
-    parts.push({ kind, text });
-  }
-}
-
-function splitRichText(text: string, kind: "same" | "removed" | "added") {
+function splitRichText(text: string, kind: "same" | "removed" | "added" = "same") {
   const chunks: ReturnType<typeof richText>[] = [];
   for (let index = 0; index < text.length; index += 1900) {
-    chunks.push(richText(text.slice(index, index + 1900), kind));
+    chunks.push(richText(text.slice(index, index + 1900), diffAnnotations(kind)));
   }
   return chunks;
 }
 
-function richText(content: string, kind: "same" | "removed" | "added" = "same") {
+function diffAnnotations(kind: "same" | "removed" | "added"): RichTextOptions {
+  if (kind === "removed") return { strikethrough: true, color: "red" };
+  if (kind === "added") return { bold: true, color: "green" };
+  return {};
+}
+
+type RichTextOptions = {
+  bold?: boolean;
+  strikethrough?: boolean;
+  color?: string;
+  link?: string;
+};
+
+function richText(content: string, options: RichTextOptions = {}) {
   return {
     type: "text",
-    text: { content },
+    text: { content, ...(options.link ? { link: { url: options.link } } : {}) },
     annotations: {
-      bold: kind === "added",
+      bold: options.bold ?? false,
       italic: false,
-      strikethrough: kind === "removed",
+      strikethrough: options.strikethrough ?? false,
       underline: false,
       code: false,
-      color: kind === "removed" ? "red" : kind === "added" ? "green" : "default",
+      color: options.color ?? "default",
     },
   };
 }

@@ -5,6 +5,7 @@ export type DreamsConfig = {
   maxBlocks: number;
   minTextLength: number;
   initialLookbackHours: number;
+  scanOverlapMinutes: number;
   openaiModel: string;
 };
 
@@ -25,6 +26,7 @@ export function loadConfig(): DreamsConfig {
     maxBlocks: readInt("DREAMS_MAX_BLOCKS", 25),
     minTextLength: readInt("DREAMS_MIN_TEXT_LENGTH", 80),
     initialLookbackHours: readInt("DREAMS_INITIAL_LOOKBACK_HOURS", 24),
+    scanOverlapMinutes: readInt("DREAMS_SCAN_OVERLAP_MINUTES", 10),
     openaiModel: process.env.DREAMS_OPENAI_MODEL || "gpt-4.1-mini",
   };
 }

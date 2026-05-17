@@ -8,12 +8,57 @@ export type PolishResult = {
   skippedReason?: string;
 };
 
-export async function polishBlock(
-  block: EditableBlock,
-  config: DreamsConfig,
-): Promise<PolishResult> {
-  const original = block.text.trim();
+type ModelPolishResult =
+  | { ok: true; items: Array<{ id: string; text: string }> }
+  | { ok: false; reason: string };
 
+export async function polishBlock(block: EditableBlock, config: DreamsConfig): Promise<PolishResult> {
+  return (await polishBlocks([block], config))[0] ?? skip("not changed");
+}
+
+export async function polishBlocks(blocks: EditableBlock[], config: DreamsConfig): Promise<PolishResult[]> {
+  const originals = blocks.map((block) => block.text.trim());
+  const results = originals.map((original) => precheck(original, config));
+  const modelInputs = blocks
+    .map((block, index) => ({ block, index, original: originals[index] ?? "" }))
+    .filter((item) => !results[item.index]);
+
+  if (modelInputs.length === 0) {
+    return results.map((result) => result ?? skip("not changed"));
+  }
+
+  const llmResult = await polishPageWithOpenAI(
+    modelInputs.map((item) => ({ id: item.block.id, type: item.block.type, text: item.original })),
+    config,
+  );
+  const byId = llmResult.ok ? new Map(llmResult.items.map((item) => [item.id, item.text])) : new Map<string, string>();
+
+  for (const item of modelInputs) {
+    const heuristic = heuristicPolish(item.original);
+    const polished = (byId.get(item.block.id) || heuristic).trim();
+
+    if (!polished || polished === item.original) {
+      results[item.index] = skip(llmResult.ok ? "already clear" : `${llmResult.reason}; no local cleanup`);
+      continue;
+    }
+
+    const validation = validateRewrite(item.original, polished);
+    if (!validation.ok) {
+      results[item.index] = skip(validation.reason);
+      continue;
+    }
+
+    results[item.index] = {
+      text: polished,
+      reason: byId.has(item.block.id) ? "LLM page-level wording cleanup" : "local filler cleanup",
+      changed: true,
+    };
+  }
+
+  return results.map((result) => result ?? skip("not changed"));
+}
+
+function precheck(original: string, config: DreamsConfig): PolishResult | undefined {
   if (original.length < config.minTextLength) {
     return skip("too short to improve safely");
   }
@@ -22,30 +67,62 @@ export async function polishBlock(
     return skip("contains high-risk wording, dates, or commitments");
   }
 
-  const llmResult = await polishWithOpenAI(original, config);
-  const polished = (llmResult || heuristicPolish(original)).trim();
-
-  if (!polished || polished === original) {
-    return skip("already clear");
-  }
-
-  const validation = validateRewrite(original, polished);
-  if (!validation.ok) {
-    return skip(validation.reason);
-  }
-
-  return {
-    text: polished,
-    reason: llmResult ? "LLM wording cleanup" : "local filler cleanup",
-    changed: true,
-  };
+  return undefined;
 }
 
-async function polishWithOpenAI(text: string, config: DreamsConfig): Promise<string | undefined> {
+async function polishPageWithOpenAI(
+  blocks: Array<{ id: string; type: string; text: string }>,
+  config: DreamsConfig,
+): Promise<ModelPolishResult> {
   const apiKey = process.env.DREAMS_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) return undefined;
+  if (!apiKey) return { ok: false, reason: "OpenAI unavailable: missing API key" };
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  try {
+    let response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks, true));
+
+    if (response.status === 400) {
+      response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks, false));
+    }
+
+    if (!response.ok) {
+      return { ok: false, reason: `OpenAI unavailable: HTTP ${response.status}` };
+    }
+
+    const json = (await response.json()) as {
+      output_text?: string;
+      output?: Array<{ content?: Array<{ text?: string }> }>;
+    };
+    const output =
+      json.output_text ||
+      json.output
+        ?.flatMap((item) => item.content ?? [])
+        .map((item) => item.text ?? "")
+        .join("");
+    if (!output) return { ok: false, reason: "OpenAI unavailable: empty response" };
+
+    return parseModelOutput(output);
+  } catch {
+    return { ok: false, reason: "OpenAI unavailable: request failed" };
+  }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function responseRequest(
+  apiKey: string,
+  config: DreamsConfig,
+  blocks: Array<{ id: string; type: string; text: string }>,
+  includeReasoning: boolean,
+): RequestInit {
+  return {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -56,25 +133,40 @@ async function polishWithOpenAI(text: string, config: DreamsConfig): Promise<str
       input: [
         {
           role: "system",
-          content:
-            "You polish Notion text. Make the text clearer and shorter while preserving every fact, name, date, number, link, TODO, decision, and technical term. Do not add facts. Return only the revised text.",
+          content: [
+            "You polish editable Notion blocks from one page.",
+            "Make wording clearer, tighter, and less repetitive while preserving every fact, name, date, number, link, TODO, decision, and technical term.",
+            "Do not merge, split, add, remove, or reorder blocks yet.",
+            "Return strict JSON only: {\"blocks\":[{\"id\":\"block id\",\"text\":\"revised text\"}]}",
+            "Include every input block id exactly once. If a block is already clear, return its original text.",
+          ].join(" "),
         },
-        { role: "user", content: text },
+        {
+          role: "user",
+          content: JSON.stringify({ blocks }),
+        },
       ],
-      temperature: 0.2,
+      ...(includeReasoning ? { reasoning: { effort: "minimal" } } : {}),
     }),
-  });
-
-  if (!response.ok) {
-    return undefined;
-  }
-
-  const json = (await response.json()) as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string }> }>;
   };
+}
 
-  return json.output_text || json.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("");
+function parseModelOutput(output: string): ModelPolishResult {
+  try {
+    const parsed = JSON.parse(output) as { blocks?: Array<{ id?: unknown; text?: unknown }> };
+    if (!Array.isArray(parsed.blocks)) {
+      return { ok: false, reason: "OpenAI unavailable: invalid JSON shape" };
+    }
+
+    return {
+      ok: true,
+      items: parsed.blocks
+        .filter((item): item is { id: string; text: string } => typeof item.id === "string" && typeof item.text === "string")
+        .map((item) => ({ id: item.id, text: item.text })),
+    };
+  } catch {
+    return { ok: false, reason: "OpenAI unavailable: invalid JSON" };
+  }
 }
 
 function heuristicPolish(text: string): string {

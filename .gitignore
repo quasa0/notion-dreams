@@ -1,9 +1,11 @@
 node_modules/
+.DS_Store
 dist/
 worker/node_modules/
 worker/dist/
 .next/
 web/.next/
+web/.next-dev/
 .env
 .env.local
 web/.env.local

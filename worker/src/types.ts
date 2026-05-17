@@ -9,6 +9,7 @@ export type NotionClientLike = {
   pages: {
     retrieve(args: { page_id: string }): Promise<unknown>;
     create(args: Record<string, unknown>): Promise<unknown>;
+    update(args: Record<string, unknown>): Promise<unknown>;
   };
   blocks: {
     children: {
@@ -31,6 +32,7 @@ export type EditableBlock = {
   pageId: string;
   pageTitle: string;
   text: string;
+  lastEditedTime?: string;
 };
 
 export type EditableBlockType =
@@ -72,4 +74,13 @@ export type DreamsRunResult = {
   blocksReviewed: number;
   changes: ChangeRecord[];
   skipped: SkippedRecord[];
+};
+
+export type DreamsRunProgress = {
+  runStartedAt: string;
+  pagesScanned: number;
+  blocksReviewed: number;
+  blocksChanged: number;
+  charsAdded: number;
+  charsRemoved: number;
 };

@@ -42,7 +42,7 @@ export async function polishBlock(
 }
 
 async function polishWithOpenAI(text: string, config: DreamsConfig): Promise<string | undefined> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.DREAMS_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
   if (!apiKey) return undefined;
 
   const response = await fetch("https://api.openai.com/v1/responses", {

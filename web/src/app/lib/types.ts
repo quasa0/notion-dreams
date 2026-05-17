@@ -14,6 +14,9 @@ export type DreamEdit = {
 export type DreamRun = {
   key: string;
   run_id?: string;
+  run_page_id?: string;
+  report_page_id?: string;
+  report_url?: string;
   request_id?: string;
   ran_at?: string;
   blocks_changed?: number;

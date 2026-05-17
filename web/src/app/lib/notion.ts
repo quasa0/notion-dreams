@@ -15,6 +15,7 @@ type NotionProperty = {
   rich_text?: RichText[];
   number?: number | null;
   checkbox?: boolean;
+  url?: string | null;
 };
 
 type RichText = {
@@ -59,10 +60,15 @@ function pageToRun(page: NotionPage): DreamRun {
   const changed = numberProp(props["Blocks Changed"]);
   const reviewed = numberProp(props["Blocks Reviewed"]);
   const scanned = numberProp(props["Pages Scanned"]);
+  const reportPageId = textProp(props["Report Page ID"]);
+  const reportUrl = urlProp(props["Report URL"]);
 
   return {
     key: page.id,
     run_id: reportId,
+    run_page_id: page.id,
+    ...(reportPageId ? { report_page_id: reportPageId } : {}),
+    ...(reportUrl ? { report_url: reportUrl } : {}),
     ran_at: ranAt,
     blocks_changed: changed,
     blocks_reviewed: reviewed,
@@ -97,4 +103,8 @@ function textProp(prop?: NotionProperty): string {
 
 function numberProp(prop?: NotionProperty): number {
   return prop?.type === "number" && typeof prop.number === "number" ? prop.number : 0;
+}
+
+function urlProp(prop?: NotionProperty): string {
+  return prop?.type === "url" && typeof prop.url === "string" ? prop.url : "";
 }

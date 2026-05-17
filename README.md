@@ -7,6 +7,7 @@ Background Notion Worker that polishes pages changed since the previous run.
 Install dependencies:
 
 ```bash
+cd worker
 npm install
 ```
 
@@ -20,7 +21,7 @@ $HOME/.local/bin/ntn login
 Configure secrets and target:
 
 ```bash
-cp .env.example .env
+cp .env.example worker/.env
 ```
 
 Set:
@@ -40,23 +41,35 @@ $HOME/.local/bin/ntn workers env set DREAMS_TARGET_PAGE_ID=...
 ## Verify
 
 ```bash
+cd worker
 npm run build
 ```
 
 ## Local Run
 
 ```bash
+cd worker
 npm run local
 ```
 
 ## Deploy
 
 ```bash
+cd worker
 $HOME/.local/bin/ntn workers deploy --name "Notion Dreams" --local-build
 ```
 
 Manual demo trigger:
 
 ```bash
+cd worker
 $HOME/.local/bin/ntn workers sync trigger notionDreams
+```
+
+## Web UI
+
+```bash
+cd web
+npm install
+npm run dev -- --port 3000
 ```

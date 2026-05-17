@@ -8,6 +8,7 @@ export type NotionClientLike = {
   };
   pages: {
     retrieve(args: { page_id: string }): Promise<unknown>;
+    create(args: Record<string, unknown>): Promise<unknown>;
   };
   blocks: {
     children: {
@@ -47,6 +48,7 @@ export type EditableBlockType =
 export type ChangeRecord = {
   pageId: string;
   pageTitle: string;
+  pageUrl?: string;
   blockId: string;
   blockType: string;
   before: string;

@@ -6,6 +6,7 @@ import { clsx } from "clsx";
 import type { DreamEdit, DreamRun } from "@/app/lib/types";
 
 type Props = { initialEdits: DreamEdit[]; initialRuns: DreamRun[]; source: "notion" | "demo" };
+type DashboardData = { edits: DreamEdit[]; runs: DreamRun[]; source: "notion" | "demo" };
 type FilterId = "changed" | "skipped" | "all";
 type DetailTab = "overview" | "logs";
 type SeededPage = { id: string; title: string; url?: string };
@@ -15,22 +16,49 @@ export function ReviewBoard({ initialEdits, initialRuns, source }: Props) {
   const [topBusy, setTopBusy] = useState<"refresh" | "trigger" | "seed" | null>(null);
   const [seedResult, setSeedResult] = useState<string | null>(null);
   const [seededPages, setSeededPages] = useState<SeededPage[]>([]);
+  const [edits, setEdits] = useState(initialEdits);
   const [runs, setRuns] = useState(initialRuns);
+  const [dashboardSource, setDashboardSource] = useState(source);
   const [selectedRunKey, setSelectedRunKey] = useState(initialRuns[0]?.key ?? null);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
-  const changedCount = initialEdits.filter((e) => e.status === "changed").length;
-  const skippedCount = initialEdits.filter((e) => e.status === "skipped").length;
-  const visible = useMemo(() => filter === "all" ? initialEdits : initialEdits.filter((e) => e.status === filter), [filter, initialEdits]);
+  const changedCount = edits.filter((e) => e.status === "changed").length;
+  const skippedCount = edits.filter((e) => e.status === "skipped").length;
+  const visible = useMemo(() => filter === "all" ? edits : edits.filter((e) => e.status === filter), [filter, edits]);
   const lastRun = runs[0];
   const selectedRun = runs.find((run) => run.key === selectedRunKey) ?? runs[0] ?? null;
   function selectRun(key: string, tab: DetailTab = "overview") {
     setSelectedRunKey(key);
     setDetailTab(tab);
   }
-  async function fakeRun() { setTopBusy("trigger"); await new Promise((r) => setTimeout(r, 800)); setTopBusy(null); }
+  async function triggerDream() {
+    setTopBusy("trigger");
+    try {
+      const response = await fetch("/api/trigger-dream", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Failed to trigger dream");
+      await refreshDashboardData(data.run?.startedAt);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to trigger dream");
+    } finally {
+      setTopBusy(null);
+    }
+  }
   async function refreshDashboard() {
     setTopBusy("refresh");
-    window.location.reload();
+    try {
+      await refreshDashboardData();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to refresh dashboard");
+    } finally {
+      setTopBusy(null);
+    }
+  }
+  async function refreshDashboardData(waitForRanAt?: string) {
+    const data = waitForRanAt ? await waitForDashboardRun(waitForRanAt) : await fetchDashboardData();
+    setEdits(data.edits);
+    setRuns(data.runs);
+    setDashboardSource(data.source);
+    setSelectedRunKey((current) => data.runs.some((run) => run.key === current) ? current : data.runs[0]?.key ?? null);
   }
   async function seedFastclipPages() {
     setTopBusy("seed");
@@ -48,8 +76,24 @@ export function ReviewBoard({ initialEdits, initialRuns, source }: Props) {
     }
   }
   return <div className="min-h-screen bg-paper text-ink">
-    <header className="sticky top-0 z-20 border-b border-line bg-paper/85 backdrop-blur"><div className="mx-auto flex max-w-[1480px] items-center justify-between gap-6 px-8 py-3.5"><div className="flex items-center gap-3"><Logo/><div className="flex flex-wrap items-center gap-2.5"><span className="text-[14px] font-semibold tracking-tight sm:text-[15px]">Notion Dreams | Command Center</span><span className="hidden h-4 w-px bg-line sm:block"/><span className="rounded-md border border-line bg-white px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-mute">notion worker</span></div></div><div className="hidden items-center gap-7 md:flex"><TopStat k="changed" v={changedCount}/><TopStat k="skipped" v={skippedCount}/><TopStat k="last run" v={lastRun ? relativeFromNow(lastRun.ran_at) : "—"} mono/></div><div className="flex items-center gap-2"><button onClick={seedFastclipPages} disabled={topBusy!==null} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-paper2 disabled:opacity-50">{topBusy==="seed" ? <Loader2 size={13} className="animate-spin"/> : <FilePlus2 size={13}/>}Seed pages</button><button onClick={refreshDashboard} disabled={topBusy!==null} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-paper2 disabled:opacity-50"><RefreshCw size={13} className={topBusy==="refresh" ? "animate-spin" : ""}/>Refresh</button><button onClick={fakeRun} disabled={topBusy!==null} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-ink px-3 text-[12px] font-medium text-paper transition-colors hover:bg-black disabled:opacity-60">{topBusy==="trigger" ? <Loader2 size={13} className="animate-spin"/> : <Zap size={12}/>} {topBusy==="trigger" ? "Dreaming…" : "Trigger dream"}</button></div></div></header>
-    <main className="mx-auto max-w-[1480px] px-8 pb-24 pt-8">{seedResult&&<SeedNotice message={seedResult} pages={seededPages}/>}<div className="grid grid-cols-12 items-end gap-10"><div className="col-span-12 lg:col-span-8"><div className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">background editor · worker</div><h1 className="mt-3 max-w-3xl text-[44px] font-semibold leading-[1.05] tracking-tight">Your Notion pages read better after you sleep.</h1><p className="mt-3 max-w-xl text-[14.5px] leading-[1.6] text-mute">A scheduled Worker scans pages changed since the last run, removes filler, tightens wording, preserves meaning, and writes a full audit report under Dreams/date-time-report.</p></div><div className="col-span-12 lg:col-span-4"><Cadence changedCount={changedCount} skippedCount={skippedCount} source={source}/></div></div><div className="mt-12 grid grid-cols-12 gap-10"><aside className="col-span-12 lg:col-span-3"><RunHistory runs={runs} selectedKey={selectedRun?.key ?? null} onSelect={selectRun} onRunsChange={setRuns}/></aside><section className="col-span-12 lg:col-span-9">{selectedRun?<RunDetail run={selectedRun} initialTab={detailTab}/>:<><div className="flex items-end justify-between border-b border-line pb-3"><div className="flex items-baseline gap-3"><h2 className="text-[15px] font-semibold tracking-tight">Dream edits</h2><span className="font-mono text-[11px] text-mute">{visible.length} shown</span></div><FilterTabs value={filter} onChange={setFilter} counts={{changed:changedCount, skipped:skippedCount, all:initialEdits.length}}/></div><div className="mt-6 flex flex-col gap-6">{visible.length>0 ? visible.map((edit)=><EditRow key={edit.id} edit={edit}/>) : <EmptyState/>}</div></>}</section></div></main></div>;
+    <header className="sticky top-0 z-20 border-b border-line bg-paper/85 backdrop-blur"><div className="mx-auto flex max-w-[1480px] items-center justify-between gap-6 px-8 py-3.5"><div className="flex items-center gap-3"><Logo/><div className="flex flex-wrap items-center gap-2.5"><span className="text-[14px] font-semibold tracking-tight sm:text-[15px]">Notion Dreams | Command Center</span><span className="hidden h-4 w-px bg-line sm:block"/><span className="rounded-md border border-line bg-white px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-mute">notion worker</span></div></div><div className="hidden items-center gap-7 md:flex"><TopStat k="changed" v={changedCount}/><TopStat k="skipped" v={skippedCount}/><TopStat k="last run" v={lastRun ? relativeFromNow(lastRun.ran_at) : "—"} mono/></div><div className="flex items-center gap-2"><button onClick={seedFastclipPages} disabled={topBusy!==null} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-paper2 disabled:opacity-50">{topBusy==="seed" ? <Loader2 size={13} className="animate-spin"/> : <FilePlus2 size={13}/>}Seed pages</button><button onClick={refreshDashboard} disabled={topBusy!==null} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-white px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-paper2 disabled:opacity-50"><RefreshCw size={13} className={topBusy==="refresh" ? "animate-spin" : ""}/>Refresh</button><button onClick={triggerDream} disabled={topBusy!==null} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-ink px-3 text-[12px] font-medium text-paper transition-colors hover:bg-black disabled:opacity-60">{topBusy==="trigger" ? <Loader2 size={13} className="animate-spin"/> : <Zap size={12}/>} {topBusy==="trigger" ? "Dreaming…" : "Trigger dream"}</button></div></div></header>
+    <main className="mx-auto max-w-[1480px] px-8 pb-24 pt-8">{seedResult&&<SeedNotice message={seedResult} pages={seededPages}/>}<div className="grid grid-cols-12 items-end gap-10"><div className="col-span-12 lg:col-span-8"><div className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">background editor · worker</div><h1 className="mt-3 max-w-3xl text-[44px] font-semibold leading-[1.05] tracking-tight">Your Notion pages read better after you sleep.</h1><p className="mt-3 max-w-xl text-[14.5px] leading-[1.6] text-mute">A scheduled Worker scans pages changed since the last run, removes filler, tightens wording, preserves meaning, and writes a full audit report under Dreams/date-time-report.</p></div><div className="col-span-12 lg:col-span-4"><Cadence changedCount={changedCount} skippedCount={skippedCount} source={dashboardSource}/></div></div><div className="mt-12 grid grid-cols-12 gap-10"><aside className="col-span-12 lg:col-span-3"><RunHistory runs={runs} selectedKey={selectedRun?.key ?? null} onSelect={selectRun} onRunsChange={setRuns}/></aside><section className="col-span-12 lg:col-span-9">{selectedRun?<RunDetail run={selectedRun} initialTab={detailTab}/>:<><div className="flex items-end justify-between border-b border-line pb-3"><div className="flex items-baseline gap-3"><h2 className="text-[15px] font-semibold tracking-tight">Dream edits</h2><span className="font-mono text-[11px] text-mute">{visible.length} shown</span></div><FilterTabs value={filter} onChange={setFilter} counts={{changed:changedCount, skipped:skippedCount, all:edits.length}}/></div><div className="mt-6 flex flex-col gap-6">{visible.length>0 ? visible.map((edit)=><EditRow key={edit.id} edit={edit}/>) : <EmptyState/>}</div></>}</section></div></main></div>;
+}
+async function fetchDashboardData(): Promise<DashboardData> {
+  const response = await fetch(`/api/dashboard?t=${Date.now()}`, { cache: "no-store" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? "Failed to refresh dashboard");
+  return data;
+}
+async function waitForDashboardRun(ranAt: string): Promise<DashboardData> {
+  const deadline = Date.now() + 1000 * 30;
+  let latest = await fetchDashboardData();
+  while (Date.now() < deadline) {
+    if (latest.runs.some((run) => run.ran_at && new Date(run.ran_at).getTime() >= new Date(ranAt).getTime() - 5000)) return latest;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    latest = await fetchDashboardData();
+  }
+  return latest;
 }
 function TopStat({k,v,mono=false}:{k:string;v:string|number;mono?:boolean}){return <div className="flex items-baseline gap-2"><span className="font-mono text-[10px] uppercase tracking-[0.14em] text-mute">{k}</span><span className={clsx("text-[13px] font-semibold tabular-nums", mono && "font-mono")}>{v}</span></div>}
 function Logo(){return <div className="flex h-7 w-7 items-center justify-center rounded-md border border-line bg-white"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="#111714" strokeWidth="1.4"/><path d="M4 8.2c2.2.9 4.1-.4 4.7-3.2 1.1 1.4 1.4 3.9-.2 5.2-1.4 1.1-3.6.7-4.5-2Z" stroke="#4F7A5C" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></div>}

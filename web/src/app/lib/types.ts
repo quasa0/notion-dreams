@@ -44,7 +44,3 @@ export type ReportBlock = {
   rich_text: ReportRichText[];
   children?: ReportBlock[];
 };
-
-export type ReportPreview =
-  | { mode: "recordMap"; recordMap: unknown }
-  | { mode: "blocks"; blocks: ReportBlock[] };

@@ -41,25 +41,29 @@ export async function POST() {
     const existing = await findLegacyFastclipPages(notion);
     const moved = await moveExistingFastclipPages(notion, teamDocs.id, existing);
     const generated = await generateFastclipPages(openAiKey);
-    const created = [];
     const usedTitles = new Map<string, number>();
+    const pagesToCreate = generated.pages.slice(0, 3).map((page) => ({
+      page,
+      title: uniqueTitle(cleanGeneratedTitle(page.title), usedTitles),
+    }));
 
-    for (const page of generated.pages.slice(0, 3)) {
-      const title = uniqueTitle(cleanGeneratedTitle(page.title), usedTitles);
-      const response = await notion.pages.create({
-        parent: { page_id: teamDocs.id },
-        properties: {
-          title: titleProperty(title),
-        },
-        children: pageToBlocks(page),
-      } as never);
+    const created = await Promise.all(
+      pagesToCreate.map(async ({ page, title }) => {
+        const response = await notion.pages.create({
+          parent: { page_id: teamDocs.id },
+          properties: {
+            title: titleProperty(title),
+          },
+          children: pageToBlocks(page),
+        } as never);
 
-      created.push({
-        id: response.id,
-        title,
-        url: "url" in response ? response.url : undefined,
-      });
-    }
+        return {
+          id: response.id,
+          title,
+          url: "url" in response ? response.url : undefined,
+        };
+      }),
+    );
 
     return NextResponse.json({ created, moved, parent: teamDocs });
   } catch (error) {
@@ -167,6 +171,7 @@ async function generateFastclipPages(openAiKey: string): Promise<GeneratedPayloa
         },
       ],
     }),
+    cache: "no-store",
   });
 
   if (!response.ok) {
@@ -270,16 +275,19 @@ async function findLegacyFastclipPages(notion: Client) {
   const titles = new Set(legacyTitles);
   const seen = new Set<string>();
 
-  return results
-    .flatMap((result) => result.results)
-    .filter((result) => "properties" in result)
-    .map((result) => ({ id: result.id, title: getPageTitle(result.properties) }))
-    .filter((page) => titles.has(normalizedTitle(page.title)))
-    .filter((page) => {
-      if (seen.has(page.id)) return false;
+  const pages: Array<{ id: string; title: string }> = [];
+  for (const resultSet of results) {
+    for (const result of resultSet.results) {
+      if (!("properties" in result)) continue;
+      const page = { id: result.id, title: getPageTitle(result.properties) };
+      if (!titles.has(normalizedTitle(page.title))) continue;
+      if (seen.has(page.id)) continue;
       seen.add(page.id);
-      return true;
-    });
+      pages.push(page);
+    }
+  }
+
+  return pages;
 }
 
 async function moveExistingFastclipPages(

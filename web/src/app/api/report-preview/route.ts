@@ -44,29 +44,31 @@ export async function POST(request: Request) {
 }
 
 async function readBlocks(notion: Client, blockId: string, depth: number): Promise<ReportBlock[]> {
-  const blocks: ReportBlock[] = [];
-  let cursor: string | undefined;
+  return readBlockPage(notion, blockId, depth);
+}
 
-  do {
-    const response = await notion.blocks.children.list({
-      block_id: blockId,
-      page_size: 100,
-      start_cursor: cursor,
-    });
+async function readBlockPage(notion: Client, blockId: string, depth: number, cursor?: string): Promise<ReportBlock[]> {
+  const response = await notion.blocks.children.list({
+    block_id: blockId,
+    page_size: 100,
+    ...(cursor ? { start_cursor: cursor } : {}),
+  });
 
-    for (const raw of response.results) {
-      const block = normalizeBlock(raw as NotionBlock);
-      if (!block) continue;
-      if (raw && "has_children" in raw && raw.has_children && depth < 2) {
-        block.children = await readBlocks(notion, raw.id, depth + 1);
-      }
-      blocks.push(block);
-    }
+  const blocks = (
+    await Promise.all(
+      response.results.map(async (raw) => {
+        const block = normalizeBlock(raw as NotionBlock);
+        if (!block) return null;
+        if ("has_children" in raw && raw.has_children && depth < 2) {
+          block.children = await readBlocks(notion, raw.id, depth + 1);
+        }
+        return block;
+      }),
+    )
+  ).filter((block): block is ReportBlock => Boolean(block));
 
-    cursor = response.next_cursor ?? undefined;
-  } while (cursor);
-
-  return blocks;
+  if (!response.next_cursor) return blocks;
+  return [...blocks, ...(await readBlockPage(notion, blockId, depth, response.next_cursor))];
 }
 
 function normalizeBlock(block: NotionBlock): ReportBlock | null {

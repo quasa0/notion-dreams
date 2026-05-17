@@ -131,9 +131,11 @@ function numberValue(value?: string): number {
 }
 
 function runsToEdits(runs: DreamRun[]): DreamEdit[] {
-  return runs
-    .filter((run) => run.status?.toLowerCase() !== "in progress" && (run.blocks_changed ?? 0) === 0)
-    .map((run) => ({
+  const edits: DreamEdit[] = [];
+
+  for (const run of runs) {
+    if (run.status?.toLowerCase() === "in progress" || (run.blocks_changed ?? 0) !== 0) continue;
+    edits.push({
       id: `${run.key}-summary`,
       page: run.run_id ?? "Dreams report",
       path: "Dreams / report",
@@ -144,7 +146,10 @@ function runsToEdits(runs: DreamRun[]): DreamEdit[] {
       status: "skipped",
       detected_at: run.ran_at ?? null,
       run_id: run.run_id ?? null,
-    }));
+    });
+  }
+
+  return edits;
 }
 
 function textProp(prop?: NotionProperty): string {

@@ -77,9 +77,18 @@ async function notionWorkerRequest<T>(method: string, body: Record<string, unkno
 
 function nearestRun(runs: WorkerRun[], ranAt: string): WorkerRun | undefined {
   const targetMs = new Date(ranAt).getTime();
-  return runs
-    .map((run) => ({ run, distance: Math.abs(new Date(run.startedAt).getTime() - targetMs) }))
-    .sort((a, b) => a.distance - b.distance)[0]?.run;
+  let nearest: WorkerRun | undefined;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const run of runs) {
+    const distance = Math.abs(new Date(run.startedAt).getTime() - targetMs);
+    if (distance < nearestDistance) {
+      nearest = run;
+      nearestDistance = distance;
+    }
+  }
+
+  return nearest;
 }
 
 function cleanLogs(logs: string): string {

@@ -2,6 +2,15 @@ import { Client } from "@notionhq/client";
 import { NextResponse } from "next/server";
 
 type NotionBlock = Record<string, unknown>;
+type ChildPage = { id: string; title: string; url?: string };
+
+const pacificStampFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "America/Los_Angeles",
+});
 
 const mingleSections = [
   {
@@ -66,7 +75,6 @@ export async function POST() {
       return NextResponse.json({ error: "Need at least 1 page under Team Docs to mingle. Use Seed pages first." }, { status: 400 });
     }
 
-    const edited = [];
     const maxPages = Math.min(pages.length, 5);
     const minPages = Math.min(pages.length, 2);
     const count = randomInt(minPages, maxPages);
@@ -75,7 +83,7 @@ export async function POST() {
 
     console.log(`[mingle-pages] randomly selected ${selected.length} pages`);
 
-    for (const [index, page] of selected.entries()) {
+    const edited = await Promise.all(selected.map(async (page, index) => {
       console.log(`[mingle-pages] editing page ${page.id} title="${page.title}"`);
 
       await notion.blocks.children.append({
@@ -83,8 +91,8 @@ export async function POST() {
         children: sectionToBlocks(sections[index % sections.length], new Date()),
       } as never);
 
-      edited.push(page);
-    }
+      return page;
+    }));
 
     console.log(`[mingle-pages] edited ${edited.length} pages`);
     return NextResponse.json({ edited, parent: teamDocs });
@@ -114,31 +122,26 @@ async function findTeamDocs(notion: Client): Promise<{ id: string }> {
   return { id: existing.id };
 }
 
-async function listChildPages(notion: Client, pageId: string) {
-  const pages: Array<{ id: string; title: string; url?: string }> = [];
-  let cursor: string | undefined;
+async function listChildPages(notion: Client, pageId: string, cursor?: string): Promise<ChildPage[]> {
+  const response = await notion.blocks.children.list({
+    block_id: pageId,
+    page_size: 100,
+    ...(cursor ? { start_cursor: cursor } : {}),
+  });
 
-  do {
-    const response = await notion.blocks.children.list({
-      block_id: pageId,
-      page_size: 100,
-      ...(cursor ? { start_cursor: cursor } : {}),
-    });
-
-    for (const block of response.results) {
-      if ("type" in block && block.type === "child_page") {
-        pages.push({
-          id: block.id,
-          title: block.child_page.title,
-          url: notionPageUrl(block.id),
-        });
-      }
+  const pages: ChildPage[] = [];
+  for (const block of response.results) {
+    if ("type" in block && block.type === "child_page") {
+      pages.push({
+        id: block.id,
+        title: block.child_page.title,
+        url: notionPageUrl(block.id),
+      });
     }
+  }
 
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined;
-  } while (cursor);
-
-  return pages;
+  if (!response.next_cursor) return pages;
+  return [...pages, ...(await listChildPages(notion, pageId, response.next_cursor))];
 }
 
 function notionPageUrl(id: string) {
@@ -159,13 +162,7 @@ function randomInt(min: number, max: number) {
 }
 
 function sectionToBlocks(section: (typeof mingleSections)[number], now: Date): NotionBlock[] {
-  const stamp = new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "America/Los_Angeles",
-  }).format(now);
+  const stamp = pacificStampFormatter.format(now);
 
   return [
     h2(`${section.heading} (${stamp})`),

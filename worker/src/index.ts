@@ -3,7 +3,7 @@ import { Worker } from "@notionhq/workers";
 import * as Builder from "@notionhq/workers/builder";
 import * as Schema from "@notionhq/workers/schema";
 import { loadConfig } from "./config.js";
-import { diffDisplayParts, diffStats } from "./diff.js";
+import { diffParts, diffStats } from "./diff.js";
 import { runDreams } from "./dreams.js";
 import type { ChangeRecord, DreamsRunProgress, DreamsRunResult, NotionClientLike } from "./types.js";
 
@@ -596,7 +596,7 @@ function diffQuote(before: string, after: string) {
 }
 
 function diffRichText(before: string, after: string) {
-  return diffDisplayParts(before, after)
+  return diffParts(before, after)
     .filter((part) => part.text)
     .flatMap((part) => splitRichText(part.text, diffAnnotations(part.kind)));
 }

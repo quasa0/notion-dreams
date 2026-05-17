@@ -111,12 +111,7 @@ async function polishPageWithOpenAI(
   }
 
   try {
-    let response = await openAIAttempt(apiKey, config, blocks, true, 1);
-
-    if (response.status === 400) {
-      logOpenAI(`retry reason="HTTP 400 with reasoning" next_attempt=2 blocks=${blocks.length}`);
-      response = await openAIAttempt(apiKey, config, blocks, false, 2);
-    }
+    const response = await openAIAttempt(apiKey, config, blocks, 1);
 
     if (!response.ok) {
       logOpenAI(`fail status=${response.status} blocks=${blocks.length}`);
@@ -151,13 +146,12 @@ async function openAIAttempt(
   apiKey: string,
   config: DreamsConfig,
   blocks: Array<{ id: string; type: string; text: string }>,
-  includeReasoning: boolean,
   attempt: number,
 ): Promise<Response> {
   const started = Date.now();
   const chars = blocks.reduce((total, block) => total + block.text.length, 0);
-  logOpenAI(`attempt=${attempt} model=${config.openaiModel} blocks=${blocks.length} chars=${chars} reasoning=${includeReasoning ? "on" : "off"}`);
-  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks, includeReasoning));
+  logOpenAI(`attempt=${attempt} model=${config.openaiModel} blocks=${blocks.length} chars=${chars} json_schema=on`);
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", responseRequest(apiKey, config, blocks));
   logOpenAI(`attempt=${attempt} status=${response.status} elapsed_ms=${Date.now() - started}`);
   return response;
 }
@@ -176,7 +170,6 @@ function responseRequest(
   apiKey: string,
   config: DreamsConfig,
   blocks: Array<{ id: string; type: string; text: string }>,
-  includeReasoning: boolean,
 ): RequestInit {
   return {
     method: "POST",
@@ -194,8 +187,8 @@ function responseRequest(
             "Make wording clearer, tighter, and less repetitive while preserving every fact, name, date, number, link, TODO, decision, and technical term.",
             "When adjacent sentences repeat the same point, replace them with one clear sentence that preserves the point.",
             "Fix obvious typos and duplicated filler words when the intended wording is clear.",
+            "Do not rewrite a block solely to swap synonyms, change voice, or make a minor style preference.",
             "Do not merge, split, add, remove, or reorder blocks yet.",
-            "Return strict JSON only: {\"blocks\":[{\"id\":\"block id\",\"text\":\"revised text\"}]}",
             "Include every input block id exactly once. If a block is already clear, return its original text.",
           ].join(" "),
         },
@@ -204,7 +197,32 @@ function responseRequest(
           content: JSON.stringify({ blocks }),
         },
       ],
-      ...(includeReasoning ? { reasoning: { effort: "minimal" } } : {}),
+      text: {
+        format: {
+          type: "json_schema",
+          name: "notion_dreams_polish",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              blocks: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    id: { type: "string" },
+                    text: { type: "string" },
+                  },
+                  required: ["id", "text"],
+                },
+              },
+            },
+            required: ["blocks"],
+          },
+        },
+      },
     }),
   };
 }
@@ -257,11 +275,47 @@ function validateRewrite(before: string, after: string): { ok: true } | { ok: fa
     return { ok: false, reason: `missing important token(s): ${missing.slice(0, 5).join(", ")}` };
   }
 
+  if (isLowValueRewrite(before, after)) {
+    return { ok: false, reason: "rewrite too minor" };
+  }
+
   return { ok: true };
 }
 
 function hasSafeCompressionSignals(text: string): boolean {
   return hasRepeatedSentence(text) || /\b(?:really really|very very|basically basically|later later|right now right now|filler filler|not ready, not ready|clippp|recieve|teh|sucess)\b/i.test(text);
+}
+
+function isLowValueRewrite(before: string, after: string): boolean {
+  if (hasCleanupSignal(before)) return false;
+
+  const lengthRatio = after.length / Math.max(before.length, 1);
+  if (lengthRatio < 0.75 || lengthRatio > 1.08) return false;
+
+  const beforeWords = wordSet(before);
+  const afterWords = wordSet(after);
+  if (beforeWords.size === 0 || afterWords.size === 0) return false;
+
+  let shared = 0;
+  for (const word of beforeWords) {
+    if (afterWords.has(word)) shared++;
+  }
+
+  const overlap = shared / Math.max(beforeWords.size, afterWords.size);
+  return overlap >= 0.6;
+}
+
+function hasCleanupSignal(text: string): boolean {
+  return (
+    hasRepeatedSentence(text) ||
+    /\b(just|really|very|basically|actually|kind of|sort of|pretty much|in order to|due to the fact that|at this point in time|for the purpose of)\b/i.test(text) ||
+    /\b(?:clippp|recieve|teh|sucess)\b/i.test(text) ||
+    /\b(\w+)\s+\1\b/i.test(text)
+  );
+}
+
+function wordSet(text: string): Set<string> {
+  return new Set((text.toLowerCase().match(/[a-z0-9]+(?:'[a-z0-9]+)?/g) ?? []).filter((word) => word.length > 2));
 }
 
 function hasRepeatedSentence(text: string): boolean {

@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowRight, Check, Code2, FilePlus2, Loader2, RefreshCw, Shuffle, Terminal, Trash2, X, Zap } from "lucide-react";
 import { clsx } from "clsx";
 import type { DreamEdit, DreamRun } from "@/app/lib/types";
@@ -92,6 +92,9 @@ function boardReducer(state: BoardState, action: BoardAction): BoardState {
 export function ReviewBoard({ initialEdits, initialRuns }: Props) {
   const [filter, setFilter] = useState<FilterId>("changed");
   const [state, dispatch] = useReducer(boardReducer, { initialEdits, initialRuns, source: "notion" }, initBoardState);
+  const requestedRunKeyRef = useRef<string | null>(null);
+  const restoredRunKeyRef = useRef<string | null>(null);
+  const [urlHydrated, setUrlHydrated] = useState(false);
   const { topBusy, seedResult, seededPages, noticeExpiresAt, edits, runs, selectedRunKey, detailTab } = state;
   const changedCount = edits.filter((e) => e.status === "changed").length;
   const skippedCount = edits.filter((e) => e.status === "skipped").length;
@@ -103,6 +106,37 @@ export function ReviewBoard({ initialEdits, initialRuns }: Props) {
   useEffect(() => {
     refreshDashboardData().catch((error) => console.error("Failed to refresh dashboard on mount", error));
   }, []);
+  useEffect(() => {
+    const requestedRunKey = new URLSearchParams(window.location.search).get("r");
+    requestedRunKeyRef.current = requestedRunKey;
+    if (requestedRunKey && runs.some((run) => run.key === requestedRunKey)) {
+      restoredRunKeyRef.current = requestedRunKey;
+      dispatch({ type: "selectRun", key: requestedRunKey });
+    }
+    setUrlHydrated(true);
+  }, []);
+  useEffect(() => {
+    const requestedRunKey = requestedRunKeyRef.current;
+    if (!urlHydrated || !requestedRunKey || restoredRunKeyRef.current === requestedRunKey) return;
+    if (runs.some((run) => run.key === requestedRunKey)) {
+      restoredRunKeyRef.current = requestedRunKey;
+      dispatch({ type: "selectRun", key: requestedRunKey });
+    }
+  }, [runs, urlHydrated]);
+  useEffect(() => {
+    if (!urlHydrated) return;
+    const url = new URL(window.location.href);
+    if (selectedRunKey) {
+      url.searchParams.set("r", selectedRunKey);
+    } else {
+      url.searchParams.delete("r");
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [selectedRunKey, urlHydrated]);
   useEffect(() => {
     setNow(Date.now());
     const interval = window.setInterval(() => setNow(Date.now()), 1000);

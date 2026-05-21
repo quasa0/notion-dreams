@@ -11,7 +11,7 @@ Notion Dreams is a Notion Worker that reviews recently changed Notion pages, lig
 
 ## Why
 
-Anthropic recently built dreaming mode for Claude memories, we built it for Notion. It's a Notion Worker that scans recently changed pages, tightens wording while preserving meaning and structure, and writes an audit report for every run. The dashboard lets users inspect runs, reports, and worker logs so teams can wake up to cleaner, clearer docs.
+Claude recently launched [dreaming in Claude Managed Agents](https://x.com/claudeai/status/2052067399088664981?s=20), a research preview where agents review past sessions, extract patterns, and curate memories over time. Notion Dreams applies a similar idea to Notion workspaces: it scans recently changed pages, tightens wording while preserving meaning and structure, and writes an audit report for every run. The dashboard lets users inspect runs, reports, and worker logs so teams can wake up to cleaner, clearer docs.
 
 ## Hackathon
 

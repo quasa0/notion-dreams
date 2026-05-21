@@ -15,7 +15,7 @@ Anthropic recently built dreaming mode for Claude memories, we built it for Noti
 
 ## Hackathon
 
-Notion Dreams was built as part of the [Notion Developer Platform Hackathon](https://luma.com/fyuf7?tk=MH2XUV), held May 16-17, 2026 at Notion HQ in San Francisco. Watch the [hackathon submission demo](https://www.youtube.com/watch?v=hMv3Az-qzG8).
+Notion Dreams was built as part of the [Notion Developer Platform Hackathon](https://luma.com/fyuf7?tk=MH2XUV), held May 16-17, 2026 at Notion HQ in San Francisco. The event had roughly 100+ teams and 288 registered attendees. The project received positive feedback from judges at Anthropic and Notion, though it was not selected as one of the top 6 projects invited to present on stage. Watch the [hackathon submission demo](https://www.youtube.com/watch?v=hMv3Az-qzG8).
 
 ## How It Works
 

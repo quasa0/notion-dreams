@@ -4,8 +4,8 @@ Notion Dreams is a Notion Worker that reviews recently changed Notion pages, lig
 
 <table>
   <tr>
-    <td><img src="docs/notion-dreams-dashboard.png" alt="Notion Dreams dashboard"></td>
-    <td><img src="docs/notion-dreams-report-preview.png" alt="Notion Dreams report preview"></td>
+    <td width="50%"><img src="docs/notion-dreams-dashboard.png" alt="Notion Dreams dashboard" width="100%"></td>
+    <td width="50%"><img src="docs/notion-dreams-report-preview.png" alt="Notion Dreams report preview" width="100%"></td>
   </tr>
 </table>
 

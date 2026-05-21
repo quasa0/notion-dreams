@@ -4,6 +4,8 @@ Notion Dreams is a Notion Worker that reviews recently changed Notion pages, lig
 
 <img src="docs/notion-dreams-dashboard.png" alt="Notion Dreams dashboard">
 
+<img src="docs/notion-dreams-report-preview.png" alt="Notion Dreams report preview">
+
 ## Why
 
 Anthropic recently built dreaming mode for Claude memories, we built it for Notion. It's a Notion Worker that scans recently changed pages, tightens wording while preserving meaning and structure, and writes an audit report for every run. The dashboard lets users inspect runs, reports, and worker logs so teams can wake up to cleaner, clearer docs.

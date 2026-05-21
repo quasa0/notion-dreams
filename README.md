@@ -2,7 +2,7 @@
 
 Notion Dreams is a Notion Worker that reviews recently changed Notion pages, lightly improves wording while preserving structure, and gives the user a dashboard for inspecting runs, reports, and worker logs.
 
-<img src="docs/notion-dreams-dashboard.png" alt="Notion Dreams dashboard" width="600">
+<img src="docs/notion-dreams-dashboard.png" alt="Notion Dreams dashboard">
 
 ## Why
 
